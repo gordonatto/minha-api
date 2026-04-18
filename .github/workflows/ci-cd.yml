@@ -1,0 +1,56 @@
+name: CI/CD Pipeline - Build and Push
+
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - main
+
+jobs:
+  build-and-push:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login no DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Definir tag da imagem
+        id: vars
+        # Mudamos de GITHUB_ENV para GITHUB_OUTPUT. O VS Code adora essa abordagem!
+        run: echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build da imagem Docker
+        run: |
+          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/minha-api:${{ steps.vars.outputs.tag }} .
+          docker tag ${{ secrets.DOCKERHUB_USERNAME }}/minha-api:${{ steps.vars.outputs.tag }} ${{ secrets.DOCKERHUB_USERNAME }}/minha-api:latest
+
+      - name: Push da imagem para o DockerHub
+        run: |
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/minha-api:${{ steps.vars.outputs.tag }}
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/minha-api:latest
+
+      - name: Limpar tags antigas no DockerHub
+        run: |
+          echo "Autenticando na API do Docker Hub..."
+          TOKEN=$(curl -s -H "Content-Type: application/json" -X POST -d '{"username": "${{ secrets.DOCKERHUB_USERNAME }}", "password": "${{ secrets.DOCKERHUB_TOKEN }}"}' https://hub.docker.com/v2/users/login/ | jq -r .token)
+          
+          echo "Buscando tags existentes..."
+          TAGS=$(curl -s -H "Authorization: JWT $TOKEN" "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/minha-api/tags/?page_size=100" | jq -r '.results|.[]|.name')
+          
+          for TAG_NAME in $TAGS; do
+            if [ "$TAG_NAME" != "latest" ] && [ "$TAG_NAME" != "${{ steps.vars.outputs.tag }}" ]; then
+              echo "Deletando tag antiga: $TAG_NAME"
+              curl -s -X DELETE -H "Authorization: JWT $TOKEN" "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/minha-api/tags/$TAG_NAME/"
+            fi
+          done
